@@ -1,19 +1,26 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, make_response
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from flask_cors import CORS
 from extensions import db, bcrypt
-from models import User
+from app import User, app
+
+# Enable CORS for the entire Flask app
+CORS(app)
 
 auth_bp = Blueprint('auth', __name__)
 
-@auth_bp.route('/register', methods=['POST'])
+@auth_bp.route('/register', methods=['POST', 'OPTIONS'])
 def register():
+    if request.method == 'OPTIONS':
+        return _build_cors_preflight_response()
+    
     data = request.json
     username = data.get('username')
     email = data.get('email')
     password = data.get('password')
 
-    if not username or not password or (not email and not email):
-        return jsonify({'error': 'Username, password and email are required'}), 400
+    if not username or not password or not email:
+        return jsonify({'error': 'Username, password, and email are required'}), 400
 
     if User.query.filter_by(username=username).first():
         return jsonify({'error': 'Username already exists'}), 400
@@ -25,8 +32,11 @@ def register():
 
     return jsonify({'message': 'User registered successfully!'}), 201
 
-@auth_bp.route('/login', methods=['POST'])
+@auth_bp.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    if request.method == 'OPTIONS':
+        return _build_cors_preflight_response()
+
     data = request.json
     username = data.get('username')
     password = data.get('password')
@@ -42,3 +52,15 @@ def login():
 @jwt_required()
 def logout():
     return jsonify({'message': 'Logout successful'}), 200
+
+app.register_blueprint(auth_bp, url_prefix='/auth')
+
+def _build_cors_preflight_response():
+    response = make_response()
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add('Access-Control-Allow-Headers', "Content-Type,Authorization")
+    response.headers.add('Access-Control-Allow-Methods', "GET, POST, OPTIONS")
+    return response
+
+if __name__ == '__main__':
+    app.run(port=5555)
