@@ -1,100 +1,45 @@
-from flask import Flask, request, jsonify, Blueprint
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
 from flask_migrate import Migrate
 import os
 from config import Config
-from flask_jwt_extended import JWTManager,jwt_required,get_jwt_identity
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
 from extensions import db, bcrypt
 from flask_jwt_extended import decode_token
-from datetime import datetime
-from flask_jwt_extended import create_access_token
+from auth import auth_bp
+from models import User, Order, OrderItem, Sales, Review
+from alembic import op
+import sqlalchemy as sa
 
-
+# Initialize the Flask application
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": "http://localhost:3000"}})
+
+# Configure the app
 app.config.from_object(Config)
-jwt = JWTManager(app)
 basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(basedir, "app.db")}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False  # Disable modification tracking
+
+# Initialize extensions
+jwt = JWTManager(app)
 db.init_app(app)
 bcrypt.init_app(app)
 migrate = Migrate(app, db)
 
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    password = db.Column(db.String(120), nullable=False)
-
-    def __repr__(self):
-        return f'<User {self.username}>'
-
-# Define the Order model
-class Order(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    email = db.Column(db.String(100), nullable=False)
-    address = db.Column(db.String(200), nullable=False)
-    total_price = db.Column(db.Float, nullable=False)
-    payment_method = db.Column(db.String(50), nullable=False)
-    order_items = db.relationship('OrderItem', backref='order', lazy=True)
-
-    def __repr__(self):
-        return f'<Order {self.id}>'
-
-# Define the OrderItem model
-class OrderItem(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
-    name = db.Column(db.String(100), nullable=False)
-    price = db.Column(db.Float, nullable=False)  # Ensure this is not nullable
-    quantity = db.Column(db.Integer, nullable=False)
-    description = db.Column(db.String(200), nullable=False)
-
-    def __repr__(self):
-        return f'<OrderItem {self.id}>'
-    
-class Sales(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    item_id = db.Column(db.Integer, nullable=False)
-    item_name = db.Column(db.String(100), nullable=False)
-    quantity_sold = db.Column(db.Integer, nullable=False)
-    total_revenue = db.Column(db.Float, nullable=False)
-    date_sold = db.Column(db.DateTime, nullable=False)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'item_id': self.item_id,
-            'item_name': self.item_name,
-            'quantity_sold': self.quantity_sold,
-            'total_revenue': self.total_revenue,
-            'date_sold': self.date_sold
-        }
-    
-# Define the Review model
-class Review(db.Model):
-    __tablename__ = 'reviews'
-
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    order_item_id = db.Column(db.Integer, db.ForeignKey('order_item.id'), nullable=False)
-    rating = db.Column(db.Integer, nullable=False)
-    comment = db.Column(db.Text, nullable=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
-
-    # Add relationship to OrderItem
-    order_item = db.relationship('OrderItem', backref='reviews')
-
-    def __repr__(self):
-        return f'<Review {self.id}>'
-
+# Register blueprints
+app.register_blueprint(auth_bp, url_prefix='/auth')
 
 # Create database tables
 with app.app_context():
     db.create_all()
+
+def upgrade():
+    op.add_column('user', sa.Column('created_at', sa.DateTime(), nullable=True))
+
+def downgrade():
+    op.drop_column('user', 'created_at')
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -104,14 +49,11 @@ def create_order():
     try:
         data = request.get_json()
 
-        # Log the received data for debugging
         app.logger.debug(f'Received order data: {data}')
 
-        # Validate data
         if not data.get('name') or not data.get('email') or not data.get('address'):
             return jsonify({'error': 'Missing required fields'}), 400
 
-        # Create new Order
         new_order = Order(
             name=data['name'],
             email=data['email'],
@@ -124,7 +66,6 @@ def create_order():
             if not item.get('name') or not item.get('price') or not item.get('quantity') or not item.get('description'):
                 return jsonify({'error': 'Missing item details'}), 400
 
-            # Convert price to float and log it
             item_price = convert_price(item['price'])
             app.logger.debug(f'Item price after conversion: {item_price}')
             if item_price is None:
@@ -209,9 +150,8 @@ def get_orders():
 @jwt_required()
 def create_review():
     identity = get_jwt_identity()
-    app.logger.debug(f'JWT Identity: {identity}')
-    
     user_id = identity.get('id')
+
     if user_id is None:
         return jsonify({'error': 'User ID not found in token'}), 401
 
@@ -219,7 +159,7 @@ def create_review():
 
     try:
         order_item_id = data['order_item_id']
-        rating = data['rating']
+        rating = int(data['rating'])  # Convert to integer
         comment = data.get('comment')
 
         if not (1 <= rating <= 5):
@@ -228,7 +168,7 @@ def create_review():
         new_review = Review(
             user_id=user_id,
             order_item_id=order_item_id,
-            rating=rating,
+            rating=rating,  # Ensure rating is an integer
             comment=comment
         )
         db.session.add(new_review)
@@ -247,6 +187,7 @@ def create_review():
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
+
     
 
 @app.route('/reviews/<int:order_item_id>', methods=['GET'])
@@ -270,10 +211,24 @@ def get_sales():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.before_request
+def before_request():
+    if request.method == 'OPTIONS':
+        response = app.make_default_options_response()
+        headers = None
+        if hasattr(response, 'headers'):
+            headers = response.headers
+        elif hasattr(response, 'getheaders'):
+            headers = response.getheaders()
+        headers['Access-Control-Allow-Origin'] = 'http://localhost:3000'
+        headers['Access-Control-Allow-Methods'] = 'POST, GET, OPTIONS, PUT, DELETE'
+        headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+
 
 def convert_price(price_str):
     if isinstance(price_str, str):
-        # Remove commas from the price string
         price_str = price_str.replace(',', '')
         try:
             return float(price_str)
